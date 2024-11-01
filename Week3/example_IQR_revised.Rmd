@@ -1,0 +1,262 @@
+---
+title: "CITS4009 Computational Data Analysis"
+subtitle: "A sample Rmd file and explanation on IQR"
+graphics: yes
+author: Wei Liu (2023)
+date: "Semester 2, 2023"
+
+output:
+  html_document:
+    includes:
+      before_body: style.html
+    number_sections: true
+
+---
+
+# Introduction 
+
+This sample Rmd file shows you how to do R code, data visualization,
+alongside with textual explanation. To generate the html file, do the following
+in R:
+
+1. Bring in the `rmarkdown` library by typing: `library(rmarkdown)`
+
+1. Change your working directory to where this `example_IQR.Rmd` file is.
+
+1. Type: `render("example_IQR.Rmd", output_file="example_IQR.html")`
+
+1. Open the generated `example_IQR.html` file in any web browser and view
+   the output.
+
+To generate the html file in RStudio is even simpler:
+
+1. Open this `example_IQR.Rmd` file in RStudio.
+
+2. Click the `knit` button. The generated `example_IQR.html` file should
+   appear in your working directory and your default web browser
+   should be launched to show the html file.
+
+To quickly learn `rmarkdown`, see the following links:
+
+* **R Markdown cheat sheet:** https://www.rstudio.com/wp-content/uploads/2015/02/rmarkdown-cheatsheet.pdf
+
+* **R Markdown from RStudio:** https://rmarkdown.rstudio.com/
+
+# Defining a function
+
+Firstly, we bring in the required library and define a function called
+`plot.density.boxplot` that is needed several times in the code.
+The function superimposes the boxplot and distribution of a given vector
+of numbers on top of each other so that we can see the alignment of the
+boxplot with the distribution.  This means that the boxplot will be in the
+horizontal orientation, with the whiskers horizontal rather than vertical.
+
+```{r size="tiny", eval=T, echo=T}
+library(ggplot2)
+
+plot.density.boxplot <- function(x) {
+   # find out the highest peak of the distribution
+   max.peak <- max(density(x)$y)
+   # adjust the width of boxplot with respect to the max.peak value and
+   # raise the boxplot a little bit so that the whiskers are slightly
+   # above the x-axis.
+   ggplot() + geom_density(aes(x=x), col="blue") +
+      geom_boxplot(aes(x=x, y=0.1*max.peak), width=1.6*max.peak,
+                   fill='yellow', alpha=0.5,
+                   outlier.colour="red", outlier.size=6) +
+      labs(title="Distribution and boxplot of the data", y="density")
+}
+```
+
+# Experiments
+
+## Experiment 1
+
+Let's synthesize some data and call `boxplot.stats()` to get the
+`Q0`, `Q1`, ...,  `Q4` values as mentioned in the lecture note.
+
+```{r size="tiny", out.width="60%", collapse=T}
+x <- rnorm(1000)
+plot.density.boxplot(x)
+
+q <- boxplot.stats(x)$stats # we call these numbers Q0,...,Q4
+q
+for (i in 0:4) 
+   assign(paste('Q', i, sep=""), q[i+1])
+```
+
+The `for` loop above is the same as doing the following five assignment statements.
+```{r eval=F, echo=T}
+Q0 <- q[1]; Q1 <- q[2]; Q2 <- q[3]; Q3 <- q[4]; Q4 <- q[5]
+```
+
+In the code below, we compute the IQR and investigate how `Q0` and `Q4` are computed by the `boxplot.stats()` function.
+
+```{r collapse=T}
+# inter-quartile range
+IQR <- Q3 - Q1
+
+# Theoretically, the lower whisker Q0 should be at:
+theoretical.Q0 <- Q1 - 1.5*IQR
+
+cat("Theoretically, Q0 should be", theoretical.Q0, "\n")
+cat("Q0 computed by boxplot.stats() is", Q0, "\n")
+```
+
+Instead of returning the theoretical `Q0` value using the
+formula `Q1 - 1.5*IQR`, `boxplot.stats()` goes back to our
+data (vector `x`) to find the smallest value in `x` that is
+*just* larger than or equal to `theoretical.Q0`.
+
+```{r collapse=T}
+v0 <- min(x[x >= theoretical.Q0])
+cat("The smallest value in x that is just larger than or equal to theoretical.Q0 is", v0, "\n")
+```
+
+We can see that variable `v0` is the same as the `Q0` value returned
+by the `boxplot.stats()` function.  Similarly, instead of returning the
+theoretical `Q4` value using the formula `Q3 + 1.5*IQR`, `boxplot.stats()`
+goes back to our data (vector `x`) to find the largest value in `x`
+that is *just* smaller than or equal to `theoretical.Q4`.
+
+```{r collapse=T}
+theoretical.Q4 <- Q3 + 1.5*IQR
+v4 <- max(x[x <= theoretical.Q4])
+cat("Theoretically, Q4 should be", theoretical.Q4, "\n")
+cat("Q4 computed by boxplot.stats() is", Q4, "\n")
+cat("The largest value in x that is just smaller than or equal to theoretical.Q4 is", v4, "\n")
+```
+
+The example above shows that `boxplot.stats()` tries to be *conservative*
+so the lower and upper whiskers are always a little bit shorter than
+the theoretical values. In this particular example, we have points
+beyond the whiskers. That is, there are outliers in our data.
+If our lower (or upper) whisker is *significantly* shorter
+than the `1.5*IQR` value, does it mean that there are no outliers beyond
+the quartile group 1 (or quartile group 4) region?
+
+## Experiment 2
+
+To answer the question above, let's consider the following bimodal
+distribution which has a very wide IQR. Our data in this example
+will therefore give a very large theoretical whisker length (`1.5*IQR`)
+which will get cut back by our data.
+
+
+```{r out.width="60%", collapse=T}
+x <- sample(c(rnorm(100, mean=0.5), rnorm(100, mean=10, sd=0.5)))
+plot.density.boxplot(x)
+
+q <- boxplot.stats(x)$stats
+q
+for (i in 0:4) 
+   assign(paste('Q', i, sep=""), q[i+1])
+
+IQR <- Q3 - Q1
+theoretical.Q0 <- Q1 - 1.5*IQR
+v0 <- min(x[x >= theoretical.Q0])
+cat("Theoretically, Q0 should be", theoretical.Q0, "\n")
+cat("Q0 computed by boxplot.stats() is", Q0, "\n")
+cat("The smallest value in x that is just larger than or equal to theoretical.Q0 is", v0, "\n")
+
+theoretical.Q4 <- Q3 + 1.5*IQR
+v4 <- max(x[x <= theoretical.Q4])
+cat("Theoretically, Q4 should be", theoretical.Q4, "\n")
+cat("Q4 computed by boxplot.stats() is", Q4, "\n")
+cat("The largest value in x that is just smaller than or equal to theoretical.Q4 is", v4, "\n")
+```
+
+In this example, the two whiskers are much shorter than `1.5*IQR`.
+Furthermore, a closer inspection reveals that `Q0` and `Q4` are also
+the minimum and maximum values of our data.
+```{r collapse=T}
+cat("min(x) = ", min(x), "; max(x) = ", max(x))
+```
+
+Is it always the case that when the whiskers are much shorter than the
+`1.5*IQR` value it means our data has no outliers?
+
+## Experiment 3
+To answer the question above, let's manually
+contaminate the data with two outliers. In the two lines below, we
+add two values `-50` and `50` to x. 
+
+```{r out.width="60%", collapse=T}
+x[length(x)+1] <- -50
+x[length(x)+1] <- 50
+plot.density.boxplot(x)
+q <- boxplot.stats(x)$stats
+q
+```
+
+Inspecting the `q` vectors from Experiment 2 and from this experiment,
+we can see that the IQR regions for the data in the two experiments are
+the same and the `Q0` and `Q4` values remain the same as well. Since the
+value `-50` and `50` are outside the `Q1 - 1.5*IQR` and `Q3 + 1.5*IQR`
+limits, the `boxplot.stat()` function picks the second number from the
+sorted `x` vector for `Q0` and the second last number from the sorted
+`x` vector for `Q4`:
+
+```{r collapse=T}
+sorted.x <- sort(x)
+cat("The first four numbers in sorted x are:", sorted.x[1:4])
+cat("Q0 returned by boxplot.stats() is:", q[1])
+
+cat("The last four numbers in sorted x are:", rev(sorted.x)[4:1])
+cat("Q4 returned by boxplot.stats() is:", q[5])
+```
+
+In the diagram above, we see that there is an outlier well beyond the tip
+of each whisker.  
+
+By *only* looking at the five numbers produced by `boxplot.stats()`,
+we cannot conclude whether our data has outliers or not.  We can use the boxplot.out()
+
+```{r collapse=T}
+outliers <- boxplot.stats(x)$out
+
+cat("The outliers in x are:", outliers)
+
+```
+
+* either inspect the boxplot diagram to *visually confirm* the absence/presence
+  of outliers &mdash or use `boxplots.stats(x)$out`
+
+* or inspect the minimum and maximum values of the data &mdash;
+  if `Q0 = min(data)` then no outliers at the lower whisker end;
+  if `Q4 = max(data)` then no outliers at the upper whisker end.
+  
+
+# Conclusion
+
+This is a very detailed inspection of the five numbers returned
+by `boxplot.stats()` and the importance of using IQR to identify
+outliers/anomalies in our data. Outliers are not always wrong values that
+should be removed. They can be just rare (but correct) measurements that
+are well away from the central 50% (the IQR region) and the lowest or highest quartile of the population.
+
+For the `rmarkdown` side, some useful options are listed below:
+
+* `out.width` &mdash; for controlling the width of the output diagrams. This
+  parameter won't affect the width of the textual outputs.
+  The value should be a percentage value (relative to the width of
+  the page) inside quotes. e.g., "60%".
+
+* `collapse` &mdash; for collapsing the R code and R output together
+  for compactness. This is a logical variable. The default
+  value is `FALSE`.
+
+* `eval` &mdash; for controlling whether the R code should be evaluated.
+  Sometimes we want to display (`echo=T`) a snippet of R code without
+  executing it (`eval=F`).  The default value is `TRUE`.
+
+* `echo` &mdash; for controlling whether the R code should appear in the output
+  html file. Sometimes we want the R code to be run silently with
+  the output displayed but not showing the code (`echo=F`). The default
+  value is `TRUE`.
+
+* `warning` &mdash; for allowing/suppressing warning messages from R to appear
+  in the output html file. This is a logical variable.
+  `warning=FALSE` means to suppress warning messages.
+  
+<br><br>

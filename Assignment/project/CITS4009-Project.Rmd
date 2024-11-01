@@ -1,0 +1,725 @@
+---
+title: "CITS4009 Project"
+author: "Rui QIN 24121014"
+---
+
+[Click this link to watch video](https://youtu.be/xqrcFVzIEUY)
+
+[Click this link to get dataset](https://www.kaggle.com/datasets/lainguyn123/student-performance-factors/data)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+# Introduction
+
+In today's education system, there are many factors that influence students' academic performance. These factors range from the amount of study time to the level of parental involvement, and each plays a role in students' academic outcomes. The availability of such data provides a unique opportunity for data-driven insights and predictive modeling.
+
+In this study, we will explore a dataset focused on student performance, examining various factors that may impact academic success. By identifying patterns and relationships within this data, our goal is to clarify how different variables (such as study habits and family background) affect students' exam scores.
+
+Loading libraries
+
+```{r lib, echo=TRUE, message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(ggcorrplot)
+library(caret)
+library(ROCR)
+library(e1071)
+library(pROC)
+library(rpart)
+library(lime)
+library(cluster)
+library(purrr)
+
+```
+
+Loading dataset
+
+```{r}
+# replace empty space with NA
+dataset <- read.csv("StudentPerformanceFactors.csv", na.strings = c("", "NA"))
+
+```
+
+## 1.Exploratory Study of the Data
+
+```{r}
+str(dataset)
+
+```
+
+The response variable is student Exam Score. It is a value that can change depending on other factors
+
+-   Categorical data: Parental_Involvement、Access_to_Resources、Extracurricular_Activities、Motivation_Level、Internet_Access、Family_Income、Teacher_Quality、School_Type、Peer_Influence、Learning_Disabilities、Parental_Education_Level、Distance_from_Home、Gender.
+
+-   Numerical data: Hours_Studied、Attendance、Sleep_Hours、Previous_Scores、Tutoring_Sessions、Physical_Activity、Exam_Score.
+
+-   The dataset contains 6607 rows, each row representing a students, and contains 20 variables.
+
+### 1.1 Explore the data
+
+```{r}
+summary(dataset$Exam_Score)
+```
+
+From this we can see:
+
+-   The lowest test score in the data set was 55.
+
+-   25% of students scored below 65 on the exam, and 75% scored below 69 on the exam.
+
+-   The average score is 67.24, the median is 67, and they are very close, meaning that the data is normally distributed.
+
+-   The highest test score in the data set is 101, but it's likely an outlier.
+
+```{r}
+sum(dataset$Exam_Score == 101)
+```
+
+Only one person scored 101, which means there are outliers in the data, and we need to identify them later and remove them.
+
+### 1.2 Data cleaning and transformation
+
+#### 1.2.1 Recognise NAs
+
+```{r}
+missing_data <- colSums(is.na(dataset))
+print(missing_data)
+```
+
+-   Most columns in the data set have no missing values.
+
+-   The Teacher_Quality column has 78 missing values.
+
+-   The Parental_Education_Level column contains 90 missing values.
+
+-   The Distance_from_Home column has 67 missing values.
+
+We need to explore which NAs can be directly filled in the mode, which need to determine its value through the distribution of data and fill in, and which need to be directly deleted
+
+```{r}
+# Teacher_Quality distribution
+table(dataset$Teacher_Quality, useNA = "ifany")
+
+# Distance_from_Home distribution
+table(dataset$Distance_from_Home, useNA = "ifany")
+
+# Parental_Education_Level distribution
+table(dataset$Parental_Education_Level, useNA = "ifany")
+
+```
+
+-   Since "Medium" is overwhelming, the missing values here can reasonably be filled in with "Medium"
+
+-   Since "Near" is very large, mode filling is appropriate in this case
+
+-   Although "High School" accounts for the largest proportion, the direct filling mode may not be accurate enough given that parental education level is an important indicator. So consider padding based on other variables, such as Family_Income.
+
+```{r}
+# View the distribution of Family_Income and Parental_Education_Level
+table(dataset$Family_Income, dataset$Parental_Education_Level, useNA = "ifany")
+
+```
+
+Based on the results for Family_Income and Parental_Education_Level, we can populate the missing values based on the distribution. For example, for Low Family_Income, we could randomly fill in missing values by the ratio of High School, College, and Postgraduate.
+
+#### 1.2.2 Replace NAs
+
+```{r}
+# For Parental_Education_Level
+dataset <- dataset %>%
+  group_by(Family_Income) %>%
+  mutate(Parental_Education_Level = ifelse(is.na(Parental_Education_Level), 
+                                           sample(Parental_Education_Level[!is.na(Parental_Education_Level)], 
+                                                  sum(is.na(Parental_Education_Level)), replace = TRUE), 
+                                           Parental_Education_Level))
+
+# For Teacher_Quality
+dataset$Teacher_Quality[is.na(dataset$Teacher_Quality)] <- mode(dataset$Teacher_Quality)
+
+#For Distance_from_Home
+dataset$Distance_from_Home[is.na(dataset$Distance_from_Home)] <- mode(dataset$Distance_from_Home)
+
+# Check for missing values
+sum(is.na(dataset$Parental_Education_Level))
+sum(is.na(dataset$Teacher_Quality))
+sum(is.na(dataset$Distance_from_Home))
+```
+
+#### 1.2.3 Remove outlier
+
+After we remove the NAs, we can use the IQR to determine the outliers in the variable and remove them
+
+```{r}
+# Visualize outliers for numeric columns
+numeric_columns <- c("Hours_Studied", "Attendance", "Sleep_Hours", 
+                     "Previous_Scores", "Tutoring_Sessions", "Physical_Activity")
+
+par(mfrow = c(2, 3),  # The layout is 2 rows and 4 columns
+    mar = c(4, 4, 2, 1),  # Adjust margins
+    cex.main = 1.5,  # Increase font size
+    cex.lab = 1.2)
+
+# Create boxplot
+for (col in numeric_columns) {
+  boxplot(dataset[[col]], main = paste("Boxplot of", col), ylab = col)
+}
+```
+
+According to the figure, only Hours_Studied and Tutoring_Sessions in the data have outliers
+
+```{r}
+numeric_columns <- c("Hours_Studied", "Tutoring_Sessions")
+
+remove_outliers <- function(data, cols) {
+  for (col in cols) {
+
+    Q1 <- quantile(data[[col]], 0.25, na.rm = TRUE)
+    Q3 <- quantile(data[[col]], 0.75, na.rm = TRUE)
+    IQR <- Q3 - Q1
+    
+
+    lower_bound <- Q1 - 1.5 * IQR
+    upper_bound <- Q3 + 1.5 * IQR
+    
+    # Filter outliers that exceed the lower and upper limits
+    data <- data %>%
+      filter(!!sym(col) >= lower_bound & !!sym(col) <= upper_bound)
+  }
+  return(data)
+}
+
+dataset_cleaned <- remove_outliers(dataset, numeric_columns)
+
+# Check whether the size of the cleaned data set has been reduced
+nrow(dataset_cleaned)
+
+```
+
+```{r}
+for (col in numeric_columns) {
+  boxplot(dataset_cleaned[[col]], main = paste("Boxplot of", col, "after cleaning"), ylab = col)
+}
+
+```
+
+According to the figures, both the Hours_Studied and Tutoring_Sessions outliers have been removed
+
+### 1.3 Visualisation
+
+#### 1.3.1 Distribution of Exam Scores
+
+```{r}
+ggplot(dataset_cleaned, aes(x = Exam_Score)) + 
+  geom_histogram(binwidth = 5, fill = "blue", color = "black") +
+  labs(title = "Distribution of Exam Scores", x = "Exam Score", y = "Frequency")
+```
+
+The histogram shows that most students' scores are concentrated between 65 and 69, indicating that the scores are relatively centered in this range. However, a small number of students can achieve scores between 80 and 100, although this is quite rare.
+
+#### 1.3.2 Hours Studied vs Exam Score with Trend Line
+
+```{r}
+ggplot(dataset_cleaned, aes(x = Hours_Studied, y = Exam_Score)) + 
+  geom_point(color = "blue", alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "Hours Studied vs Exam Score with Trend Line", x = "Hours Studied", y = "Exam Score")
+
+```
+
+There is a slight positive correlation between the number of study hours and exam scores, as shown by the upward-sloping red trend line. This indicates that most students who study less than 10 hours score around 60-70, while those who study more tend to score slightly higher. However, some students who study for longer periods still score low, suggesting that more study time does not always guarantee better performance, and it is likely that high scores are related to natural ability.
+
+#### 1.3.3 Family Income vs Exam Score
+
+```{r}
+ggplot(dataset_cleaned, aes(x = Family_Income, y = Exam_Score)) + 
+  geom_boxplot(fill = "lightcoral") +
+  labs(title = "Family Income vs Exam Score", x = "Family Income", y = "Exam Score")
+
+```
+
+The median exam scores of students from different household income groups (high, middle, and low) are very similar, all around 70. However, the chart does show that students from low-income families tend to perform slightly worse, as their highest scores, including outliers, are around 96-97, with fewer scores in the 95-100 range (only one), and their IQR distribution is lower.
+
+#### 1.3.4 Exam Score Distribution by Gender
+
+```{r}
+ggplot(dataset_cleaned, aes(x = Gender, y = Exam_Score)) + 
+  geom_violin(trim = FALSE, fill = "lightcoral") +
+  labs(title = "Exam Score Distribution by Gender", x = "Gender", y = "Exam Score")
+```
+
+The distribution of males and females is almost identical, with most exam scores concentrated around 70. Both genders have some high outliers above 90, but the overall distribution is similar. Gender does not appear to be a significant factor in determining exam scores.
+
+#### 1.3.5 Correlation Matrix
+
+```{r}
+correlation_matrix <- cor(dataset_cleaned[, sapply(dataset_cleaned, is.numeric)])
+ggcorrplot(correlation_matrix, lab = TRUE)
+
+```
+
+Exam_Score shows a moderate positive correlation with Attendance (0.59) and Hours_Studied (0.44), indicating that higher attendance and more study hours are associated with higher scores. It is also relatively correlated with Previous_Scores and Tutoring_Sessions.
+
+## 2.Modelling
+
+
+
+### 2.1 Target Variable
+
+We chose Exam_Score as the target variable. To translate this into a binary classification problem, we can choose a score threshold to divide grades, classifying exam_scores above a certain score (say 67) as "pass" and below that as "failed."
+
+```{r}
+dataset_classification <- dataset_cleaned
+
+# Convert Exam_Score to a binary categorical variable (threshold 67), Pass = 1 Fail =- 0
+dataset_classification$Pass_Fail <- ifelse(dataset_classification$Exam_Score >= 67, 1, 0)
+
+# Delete the Exam_Score column because we have generated binary categorical variables
+dataset_classification <- dataset_classification %>% select(-Exam_Score)
+
+# Check the distribution of categories
+table(dataset_classification$Pass_Fail)
+```
+
+We can find that when the threshold is 67, the distribution of fail and pass is relatively average
+
+### 2.2 Modify
+
+-   Previous_Scores: If we want to predict whether students' scores pass or not, but we directly use the historical score Previous_Scores as the feature, it may lead to overfitting of the model, so we remove it.
+
+-   Gender: Can be removed because base on previous observation, we know gender has little effect on predicted performance.
+
+```{r}
+dataset_classification <- dataset_classification %>%
+  select(-Previous_Scores)
+
+dataset_classification <- dataset_classification %>%
+  select(-Gender)
+```
+
+one-hot encodes all character variables
+
+```{r}
+dataset_classification_dummy <- dataset_classification
+
+target <- dataset_classification$Pass_Fail
+
+# one-hot encoding of character variables, excluding target variables
+dataset_classification_dummy <- dataset_classification_dummy %>%
+  select(-Pass_Fail) %>%
+  mutate_at(vars(Parental_Involvement, Access_to_Resources, Extracurricular_Activities, 
+                 Motivation_Level, Internet_Access, Family_Income, Teacher_Quality, 
+                 School_Type, Peer_Influence, Learning_Disabilities, 
+                 Parental_Education_Level, Distance_from_Home), 
+            funs(as.factor(.)))
+
+# one-hot code the remaining features using dummyVars
+dummies <- dummyVars(~., data = dataset_classification)
+dataset_classification_dummy$Pass_Fail <- target
+
+dataset_classification_dummy <- data.frame(predict(dummies, newdata = dataset_classification_dummy))
+```
+
+Next, delete all variables with too high a correlation and Pass_Fail, where the threshold is set to 0.8
+
+```{r}
+# Calculate the correlation matrix of the numerical variables
+Vars <- setdiff(colnames(dataset_classification_dummy), "Pass_Fail")
+correlation_matrix <- cor(dataset_classification_dummy$Pass_Fail, dataset_classification_dummy[, Vars], use = 'pairwise.complete.obs')
+sorted_corr <- correlation_matrix[, order(abs(correlation_matrix), decreasing = TRUE)]
+
+# Remove highly correlated features (assuming a correlation coefficient threshold of 0.8)
+high_corr_vars <- names(sorted_corr[abs(sorted_corr) > 0.8])
+dataset_classification_dummy <- dataset_classification_dummy %>%
+  select(-all_of(high_corr_vars))
+```
+
+Splitting the data into training and testing dataset
+
+```{r}
+set.seed(24121014)
+trainIndex <- createDataPartition(dataset_classification_dummy$Pass_Fail, p = 0.8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+train_data <- dataset_classification_dummy[trainIndex,]
+
+test_data <- dataset_classification_dummy[-trainIndex,]
+
+dim(train_data)
+dim(test_data)
+```
+
+### 2.3 Classification
+
+#### 2.3.1 Single Variable Classification
+
+```{r}
+# Get all dummy variable column names (excluding Pass_Fail column)
+dummyVars <- setdiff(colnames(dataset_classification_dummy), "Pass_Fail")
+
+# Define the AUC evaluation function
+calcAUC <- function(predcol, outcol) {
+  perf <- performance(prediction(as.numeric(predcol), outcol == 1), "auc")
+  as.numeric(perf@y.values)
+}
+
+# Make predictions for each single variable and calculate the AUC
+for (v in dummyVars) {
+
+    train_pred <- train_data[[v]]
+  test_pred <- test_data[[v]]
+  
+# Calculate the AUC of the training set and the test set
+  aucTrain <- calcAUC(train_pred, train_data$Pass_Fail)
+  if (aucTrain >= 0.53) {
+    aucTest <- calcAUC(test_pred, test_data$Pass_Fail)
+    print(sprintf("%s: trainAUC: %4.3f; testAUC: %4.3f", v, aucTrain, aucTest))
+  }
+}
+
+```
+
+- Hours Studied and Attendance: These variables showed the highest AUC values across all test features, with "learning time" reaching 0.720 in the training set, 0.731 in the test set, and "attendance" reaching even higher, reaching 0.847 in the training and 0.818 in the test. These results suggest that there is strong predictive power between the training and testing phases, and that these factors are important predictors of student success. High values also indicate that as students devote more time to their studies and maintain high attendance, they are more likely to pass.
+
+- Parental Involvement, Access to Resources, and Tutoring Sessions: These features show moderate predictive power with AUC values. This indicates a less robust but still some relationship between these factors and student performance. 
+
+- Distance from home: The distance between a student's home and school shows a weaker predictive value.
+
+We set up lowest AUC threshold: 0.53, and create selected dataset.
+
+```{r}
+selected_trainvars <- train_data[, c('Hours_Studied','Attendance','Parental_InvolvementHigh','Access_to_ResourcesHigh','Tutoring_Sessions', 'Peer_InfluencePositive', 'Parental_Education_LevelPostgraduate', 'Distance_from_HomeNear','Pass_Fail')]
+
+selected_testvars <- test_data[, c('Hours_Studied','Attendance','Parental_InvolvementHigh','Access_to_ResourcesHigh','Tutoring_Sessions', 'Peer_InfluencePositive', 'Parental_Education_LevelPostgraduate', 'Distance_from_HomeNear','Pass_Fail')]
+
+```
+
+By comparing the performance of all feature models with those built using subsets, we assess the impact of attribute and feature selection on the model.
+
+#### 2.3.2 Train the classification
+
+##### Model with all features
+
+```{r}
+train_data$Pass_Fail <- as.factor(train_data$Pass_Fail)
+test_data$Pass_Fail <- as.factor(test_data$Pass_Fail)
+
+tree_model <- rpart(Pass_Fail ~ ., data=train_data, method="class")
+
+# Prediction for the test data
+tree_pred_class <- predict(tree_model, newdata=test_data, type="class")
+
+# Evaluate the performance (confusion matrix)
+conf_matrix <- confusionMatrix(tree_pred_class, test_data$Pass_Fail)
+print(conf_matrix)
+
+
+nb_model <- naiveBayes(Pass_Fail ~ ., data=train_data)
+
+# Prediction for the test data
+nb_pred_class <- predict(nb_model, newdata=test_data)
+
+# Evaluate the performance (confusion matrix)
+conf_matrix_nb <- confusionMatrix(nb_pred_class, test_data$Pass_Fail)
+print(conf_matrix_nb)
+
+```
+
+For Accuracy:
+
+The decision tree model has a slightly higher accuracy than the Naive Bayes model (82.06% \> 80.51%). Both models show high accuracy, indicating that they generally perform well in distinguishing between the "Pass" and "Fail" categories.
+
+Sensitivity and Specificity:
+
+The decision tree performs better at identifying failing students (Sensitivity 79.70% \> 71.22%), while the Naive Bayes model excels at identifying passing students (Specificity 83.92% \> 87.87%). This means the decision tree tends to predict failing students more accurately, whereas the Naive Bayes model is more precise in predicting passing students.
+
+Kappa:
+
+The Kappa value of the decision tree model is slightly higher than that of the Naive Bayes model (0.6362 \> 0.5992), indicating that its classification results are more reliable compared to random guessing.
+
+McNemar's Test P-Value:
+
+McNemar's Test is used to detect whether there is a significant misclassification bias between different categories. The Naive Bayes model shows significant classification bias, indicating that it makes more errors in certain situations.
+
+Balanced Accuracy:
+
+The decision tree model has slightly higher balanced accuracy, suggesting that its classification ability is more balanced between different categories.
+
+```{r}
+# Decision Tree Prediction probabilities
+tree_pred_prob <- predict(tree_model, newdata=test_data, type="prob")
+
+# Naive Bayes Prediction probabilities
+nb_pred_prob <- predict(nb_model, newdata=test_data, type="raw")
+
+# Plot ROC
+roc_tree <- roc(test_data$Pass_Fail, tree_pred_prob[,2])
+roc_nb <- roc(test_data$Pass_Fail, nb_pred_prob[,2])
+
+auc(roc_nb)
+auc(roc_tree)
+
+plot(roc_tree, col = "blue", lwd = 2, main = "ROC Curve for Decision Tree")
+plot(roc_nb, col = "red", lwd = 2, add=TRUE)
+legend("bottomright", legend=c("Decision Tree", "Naive Bayes"), col=c("blue", "red"), lwd=2)
+
+```
+
+The ROC performance of the Decision Tree model appears to outperform that of the Naive Bayes model with higher accuracy (0.8945 vs 0.8526).
+
+
+For this binary classification problem of student performance, the decision tree model is relatively more suitable for the dataset, especially with a more balanced ability to classify between categories. The Naive Bayes model performs better at correctly identifying passing students, but it is slightly worse at classifying failing students and has issues with classification bias.
+
+##### Model with selected features
+
+```{r}
+selected_trainvars$Pass_Fail <- as.factor(selected_trainvars$Pass_Fail)
+selected_testvars$Pass_Fail <- as.factor(selected_testvars$Pass_Fail)
+
+tree_model <- rpart(Pass_Fail ~ ., data=selected_trainvars, method="class")
+
+# Prediction for the test data
+tree_pred_class <- predict(tree_model, newdata=selected_testvars, type="class")
+
+# Evaluate the performance (confusion matrix)
+conf_matrix <- confusionMatrix(tree_pred_class, selected_testvars$Pass_Fail)
+print(conf_matrix)
+
+
+nb_model <- naiveBayes(Pass_Fail ~ ., data=selected_trainvars)
+
+# Prediction for the test data
+nb_pred_class <- predict(nb_model, newdata=selected_testvars)
+
+# Evaluate the performance (confusion matrix)
+conf_matrix_nb <- confusionMatrix(nb_pred_class, selected_testvars$Pass_Fail)
+print(conf_matrix_nb)
+
+```
+
+```{r}
+# Decision Tree Prediction probabilities (use type="prob" for predicted probabilities)
+tree_pred_prob <- predict(tree_model, newdata=selected_testvars, type="prob")
+
+# Naive Bayes Prediction probabilities
+nb_pred_prob <- predict(nb_model, newdata=selected_testvars, type="raw")
+
+# Plot ROC curve for Decision Tree
+roc_tree <- roc(selected_testvars$Pass_Fail, tree_pred_prob[,2])
+
+
+# Plot ROC curve for Naive Bayes
+roc_nb <- roc(selected_testvars$Pass_Fail, nb_pred_prob[,2])
+
+auc(roc_nb)
+auc(roc_tree)
+
+plot(roc_tree, col = "blue", lwd = 2, main = "ROC Curve for Decision Tree")
+plot(roc_nb, col = "red", lwd = 2, add=TRUE)
+legend("bottomright", legend=c("Decision Tree", "Naive Bayes"), col=c("blue", "red"), lwd=2)
+
+```
+
+When we used the selected variable, we found that all the data showed that Naive Bayes had a higher classification ability than the Decision Tree
+
+Conclusion:
+
+In the analysis of the binary classification problem, both the decision tree model and the naive Bayes model show high accuracy, and the ability to identify the "pass" and "fail" categories is generally good. Decision tree models were better at identifying students who failed, while naive Bayes models were better at identifying students who passed.
+
+When considering all features, the decision tree model is slightly more accurate than the naive Bayes model, and also slightly better in balance accuracy, indicating that its classification ability is more balanced across different classes. However, when we used the selected variables for training, the performance of the naive Bayes model improved significantly, its accuracy and Kappa value were better than that of the decision tree model, and the area under the ROC curve also increased from 0.8946 to 0.9343, indicating that its classification ability was enhanced.
+
+Therefore, the selection of appropriate features and appropriate models is crucial to improve prediction performance, especially in the face of data sets with complex feature Spaces
+
+
+##### LIME
+
+LIME needs to know whether the model is a classification or regression model. To ensure that LIME can correctly handle the Decision Tree and Naive Bayes models, we need to explicitly inform it that these models are classification models. Additionally, since the default prediction output of the Naive Bayes model may not match LIME's requirements, we need to customize the prediction function and wrap the model to ensure that LIME can use this customized model for interpretation.
+
+```{r}
+# Define a custom function for the Decision Tree model
+assign("model_type.lime_model_rpart", function(object, ...) {
+  return("classification")
+}, envir = .GlobalEnv)
+
+lime_model_rpart <- function(x) {
+  class(x) <- c("lime_model_rpart", class(x))
+  x
+}
+# Define a custom predict function for Naive Bayes model
+predict_proba <- function(model, newdata) {
+  predict(model, newdata, type = "raw")
+}
+
+# Define model type and prediction functions for Naive Bayes
+assign("model_type.nb", function(x, ...) {
+  return(x$type)
+}, envir = .GlobalEnv)
+
+assign("predict_model.nb", function(x, newdata, ...) {
+  predict_result <- predict(x$model, newdata = newdata, type = "raw")
+  return(data.frame(predict_result))
+}, envir = .GlobalEnv)
+
+nb_model_proba <- list(model = nb_model, predict = predict_proba, type = "classification")
+class(nb_model_proba) <- 'nb'
+
+
+# Prepare the explainer
+explainer_tree <- lime(selected_trainvars, lime_model_rpart(tree_model))
+explainer_nb <- lime(selected_trainvars, nb_model_proba)
+
+# Generate explanations
+explanation_tree <- explain(selected_testvars[1:3, ], explainer_tree, n_labels = 1, n_features = 3)
+explanation_nb <- explain(selected_testvars[1:3, ], explainer_nb, n_labels = 1, n_features = 3)
+
+
+print(explanation_tree)
+print(explanation_nb)
+
+
+plot_features(explanation_tree)
+plot_features(explanation_nb)
+
+```
+
+LIME breaks down the contribution of each feature to specific predictions. For each instance, it shows which features support the prediction (blue) and which features contradict it (red).
+
+Decision Tree:
+
+-   Study time and attendance are the most important features across multiple cases, consistently showing strong contributions to predicting both "Pass" and "Fail" outcomes.
+
+-   Features like parental involvement and access to resources also play a role, but their impact varies significantly across different instances.
+
+-   The Decision Tree model tends to capture more direct relationships between individual features and the target label, which is reflected in the weights provided by LIME explanations.
+
+Naive Bayes Model:
+
+-   The Naive Bayes model also focuses on study time and attendance, but the feature tutoring sessions contradicts the prediction.
+
+-   Naive Bayes handles feature effects probabilistic, leading to more nuanced contributions, where even minor features like tutoring sessions can slightly influence the probability of passing or failing.
+
+-   Compared to the Decision Tree model, LIME explanations for the Naive Bayes model generally show smaller weights, reflecting the smoother handling of feature impacts by the Naive Bayes model.
+
+### 2.3 Clustering
+
+In this project, clustering helps us to identify patterns in various learning behaviors and performance of students. By analyzing multidimensional data such as students' learning time, attendance, and parental engagement, we can divide students into different groups for further study of their learning patterns
+
+```{r}
+selected_features <- dataset_cleaned%>%
+  select(Hours_Studied, Attendance, Tutoring_Sessions, Exam_Score)
+
+# Standardized numerical features
+numeric_features <- selected_features[, c("Hours_Studied", "Attendance", "Tutoring_Sessions","Exam_Score")]
+
+scaled_data <- scale(numeric_features)
+
+```
+
+```{r}
+pca_model <- prcomp(scaled_data, center = TRUE, scale. = TRUE)
+
+# The first few principal components are selected, so that the cumulative variance interpretation rate reaches 90%
+pca_data <- data.frame(pca_model$x[, 1:which(cumsum(pca_model$sdev^2 / sum(pca_model$sdev^2)) >= 0.9)[1]])
+
+summary(pca_model)
+
+
+```
+
+Principal component 1 and principal component 2 together explained nearly 69% of the variation in the data. While PC3 explains about 24.82% of the variation, its contribution is slightly weaker compared to the first two major components. This principal component may reflect the influence of secondary features, such as fewer important variables or some random pattern of learning behavior.
+
+Now we are going to use Elbow method and silhouette score to determine the K value
+
+```{r}
+wss <- function(data, k) {
+  kmeans(data, k, nstart = 10)$tot.withinss
+}
+
+# Try different K values and calculate WSS
+k_values <- 1:10
+wss_values <- map_dbl(k_values, wss, data = pca_data)
+
+plot(k_values, wss_values, type = "b", pch = 19, frame = FALSE, 
+     xlab = "Number of K", 
+     ylab = "Total Within-Cluster Sum of Squares (WSS)",
+     main = "Elbow Method for Optimal K")
+
+```
+
+In this graph, it can be seen that WSS decreases the most when K=2 to K=3, and then decreases gradually with the increase of K value. Therefore, the inflection point in the graph occurs around K=3, which means that K in the range of 2 to 3 May be a more ideal number of clusters.
+
+```{r}
+silhouette_scores <- numeric(length(k_values))
+
+# Do k-means clustering for each K value and calculate the Silhouette Score
+for (i in 1:length(k_values)) {
+  k <- k_values[i]
+  
+  kmeans_model <- kmeans(pca_data, centers = k, nstart = 25)
+  
+  dist_matrix <- dist(pca_data)
+  
+  silhouette_result <- silhouette(kmeans_model$cluster, dist_matrix)
+  
+  if (length(dim(silhouette_result)) == 2) {
+    silhouette_scores[i] <- mean(silhouette_result[, 3])
+  } else {
+    silhouette_scores[i] <- NA
+  }
+}
+
+# Draw the Silhouette Score for each K value
+
+plot(k_values, silhouette_scores, type = "b",
+     xlab = "Number of clusters (K)", ylab = "Silhouette Score", 
+     main = "Silhouette Score for Optimal K")
+
+```
+
+In this diagram, you can see that the Silhouette Score is at its maximum from K=2. According to the Silhouette Score and Elbow Method, K = 2 is probably the best value for K.
+
+```{r}
+k = 2
+kmeans_result <- kmeans(pca_data, centers = k, nstart = 10)
+
+# Visualize the clustering results
+pca_data$cluster <- as.factor(kmeans_result$cluster)
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = cluster)) +
+  geom_point(size = 3) +
+  labs(title = paste("K-means Clustering (K=", k, ") on PCA-reduced Data", sep=""), 
+       x = "Principal Component 1", y = "Principal Component 2") +
+  theme_minimal()
+
+```
+
+```{r}
+# Combine raw data with clustering results
+clustered_data <- cbind(dataset_cleaned , cluster = kmeans_result$cluster)
+
+# The average value of each feature is calculated according to the clustering results
+cluster_summary <- clustered_data %>%
+  group_by(cluster) %>%
+  summarise(across(c(Hours_Studied, Attendance, Tutoring_Sessions), mean, na.rm = TRUE))
+
+# Print the average of each cluster
+print(cluster_summary)
+```
+
+Through K-means clustering analysis, students can be divided into two distinct groups with the following main characteristics:
+
+-   Study Time: Students in Cluster 1 have a higher average study time compared to those in Cluster 2, indicating that this group tends to dedicate more time to studying. This suggests that spending more study time may effectively improve academic performance.
+
+-   Attendance Rate: The attendance rate of students in Cluster 1 is significantly higher than that of Cluster 2. This suggests that higher attendance is often associated with better study habits and improved academic performance.
+
+-   Participation in Tutoring Sessions: Although the difference in tutoring session participation between the two groups is not substantial, students in Cluster 1 participate slightly more. This indicates that this group may rely more on additional tutoring to enhance their academic performance.
+
+# Conclusion
+
+This project explores various factors that influence student academic performance, such as study time and parental involvement, and uses predictive models to reveal how these variables affect student exam scores. Through a comparative analysis of decision tree and Naive Bayes models, we found that in a full-feature model, the decision tree model slightly outperforms the Naive Bayes model, especially in terms of balanced accuracy and sensitivity in identifying failing students. However, when training with selected features, the performance of the Naive Bayes model significantly improved, demonstrating enhanced classification capabilities.
+
+Additionally, this study applied the LIME method to explain model predictions, which helps in understanding the factors behind specific predictions, thereby enhancing the interpretability and transparency of the models. Through clustering analysis, we discovered significant differences among student groups in factors such as study time, attendance rates, and participation in tutoring sessions, which provides further insights into targeted approaches for improving academic performance.
+
+In conclusion, this study not only showcases the potential applications of data analysis in education but also, through careful feature selection and appropriate model training, enhances prediction performance and provides a better understanding in the educational context.
